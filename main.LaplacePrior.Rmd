@@ -1,0 +1,2218 @@
+---
+title: "Hierarchical Poisson Model For Fertility Rate Prediction in Afghanistan"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# Data preprocessing
+
+## Load, merge and select data
+
+```{r}
+library(haven)
+library(dplyr)
+IMAGEOUT="./pics/BHP.Laplace/"
+# wm and hh are original data from UNICEF
+# `arrange` to sort the data, won't change the result
+wm <- read_sav("data_src/wm.sav")
+wm <- wm %>% arrange(HH1, HH2, WM3)
+hh <- read_sav("data_src/hh.sav")
+hh <- hh %>% arrange(HH1, HH2)
+# merge the data base on HH1 and HH2
+wm_hh_merged <- merge(wm, hh, by = c("HH1", "HH2"))
+
+variables <- c(
+  'CM11',       # Children ever born
+  'HH6.y',      # Area
+  'HH7.y',      # Province
+  'MA3',        # Husband has more wives
+  'HH1',        # Cluster number
+  'HH2',        # Household number
+  'WM3',        # Woman's line number
+  'WB6A',       # Highest level of school attended
+  'MT2',        # Frequency of listening to the radio
+  'MT3',        # Frequency of watching TV
+  'MA2',        # Age of husband
+  'WAGEM',      # Age at first marriage/union of woman
+  'windex5.y',  # Wealth index quintile
+  'HHAGE',      # Age of household head
+  'helevel',    # Education of household head
+  'HHSEX',      # Sex of household head
+  'stratum.y',  # Stratum
+  'wmweight',   # Woman's sample weight
+  'WB4'         # Age of woman
+)
+
+# dataframe selected
+df_sel <- wm_hh_merged[variables]
+
+# rename the columns
+colnames(df_sel) <- c(
+  'CEB',        # Children ever born
+  'area',       # Area
+  'province',   # Province
+  'other_wives',# Husband has more wives
+  'HH1',        # Cluster number
+  'HH2',        # Household number
+  'WM3',        # Woman's line number
+  'women_edu',  # Highest level of school attended
+  'media_radio',# Frequency of listening to the radio
+  'media_tv',   # Frequency of watching TV
+  'husband_age',# Age of husband
+  'women_agem', # Age at first marriage/union of woman
+  'windex5',    # Wealth index quintile
+  'HH_age',     # Age of household head
+  'HH_edu',     # Education of household head
+  'HH_sex',     # Sex of household head
+  'stratum',    # Stratum
+  'wgt',        # Woman's sample weight
+  'women_age'   # Age of woman
+)
+
+# removes unmarried women
+df_sel <- df_sel %>% filter(!is.na(CEB))
+# removes 2 rows of missing data in the column `age at first marriage`
+df_sel <- df_sel %>% filter(!is.na(women_agem))
+```
+
+## Data cleaning
+
+```{r}
+# response variables
+y <- df_sel$CEB
+
+##############################################################
+####################FIXED VARIABLES###########################
+##############################################################
+
+########################province##############################
+province <- df_sel$province
+
+
+   ##################################################
+   #############Descriptive statistics###############
+   ##################################################
+table(province, useNA="ifany")
+# Plot the number of records(women) we have in rural and urban area for each province
+library(ggplot2)
+province_vs_area <- with(df_sel,table(province, area))
+province_vs_area_df <- as.data.frame(province_vs_area)
+ggplot(province_vs_area_df, aes(x = province, y = Freq, fill = area))+
+geom_bar(stat="identity", position="dodge")+
+labs(title="Number of records in urban and rural areas of each province",
+x = "Province",
+y = "Count") +
+scale_fill_manual(values = c("1" = "gray", "2" = "black"),
+  labels = c("1" = "Urban", "2" = "Rural"))+
+scale_x_discrete(
+    labels = c(
+    "1" = "Kabul",
+    "2" = "Kapisa",
+    "3" = "Parwan",
+    "4" = "Maidan Wardak",
+    "5" = "Logar",
+    "6" = "Nangarhar",
+    "7" = "Laghman",
+    "8" = "Panjsher",
+    "9" = "Baghlan",
+    "10" = "Bamyan",
+    "11" = "Ghazni",
+    "12" = "Paktika",
+    "13" = "Paktya",
+    "14" = "Khost",
+    "15" = "Kunarha",
+    "16" = "Nooristan",
+    "17" = "Badakhshan",
+    "18" = "Takhar",
+    "19" = "Kunduz",
+    "20" = "Samangan",
+    "21" = "Balkh",
+    "22" = "Sar-e-Pul",
+    "23" = "Ghor",
+    "24" = "Daykundi",
+    "25" = "Urozgan",
+    "26" = "Zabul",
+    "27" = "Kandahar",
+    "28" = "Jawzjan",
+    "29" = "Faryab",
+    "30" = "Helmand",
+    "31" = "Badghis",
+    "32" = "Herat",
+    "33" = "Farah",
+    "34" = "Nimroz"
+  )
+)+
+theme_minimal()+
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+dev.print(pdf,
+	paste(IMAGEOUT,"NumOfRecords_ProvinceVsArea.pdf",sep=""),
+	width=14,height=6)
+
+province <- factor(province)
+# Using Herat as the reference level for province
+province <- relevel(province, ref = 32)
+province <- model.matrix(~province, data = province)
+colnames(province) <- c(
+  "P.HERAT.ref",
+  "P.KABUL",
+  "P.KAPISA",
+  "P.PARWAN",
+  "P.MAIDAN WARDAK",
+  "P.LOGAR",
+  "P.NANGARHAR",
+  "P.LAGHMAN",
+  "P.PANJSHER",
+  "P.BAGHLAN",
+  "P.BAMYAN",
+  "P.GHAZNI",
+  "P.PAKTIKA",
+  "P.PAKTYA",
+  "P.KHOST",
+  "P.KUNARHA",
+  "P.NOORISTAN",
+  "P.BADAKHSHAN",
+  "P.TAKHAR",
+  "P.KUNDUZ",
+  "P.SAMANGAN",
+  "P.BALKH",
+  "P.SAR-E-PUL",
+  "P.GHOR",
+  "P.DAYKUNDI",
+  "P.UROZGAN",
+  "P.ZABUL",
+  "P.KANDAHAR",
+  "P.JAWZJAN",
+  "P.FARYAB",
+  "P.HELMAND",
+  "P.BADGHIS",
+  "P.FARAH",
+  "P.NIMROZ"
+)
+########################province##############################
+
+##########################area################################
+area <- df_sel$area
+area <- ifelse(area==2, "RURAL", "URBAN")
+area <- factor(area)
+area <- relevel(area, ref = "RURAL")
+##########################area################################
+
+###################husband has other wives####################
+other_wives <- df_sel$other_wives
+# remap, treat NA and 9(NO RESPONSE) the same as
+# not having other wives
+other_wives[is.na(other_wives)] <- 9
+other_wives <- ifelse(other_wives > 1, 0, 1)
+other_wives <- factor(other_wives)
+# no need to relevel, reference level is 0 (no other wives)
+# if you want to use 1 as reference level, set `ref=2`
+# other_wives <- relevel(other_wives, ref = 1)
+###################husband has other wives####################
+
+###################household head sex#########################
+# Remap, 0 for male; 1 for female
+HH_sex <- case_when(
+    df_sel$HH_sex == 2 ~ 1,
+    df_sel$HH_sex == 1 ~ 0
+)
+HH_sex <- factor(HH_sex)
+##############################################################
+
+
+##############################################################
+####################RANDOM VARIABLES##########################
+##############################################################
+
+   ########################################################
+   #################Quantitative Variables#################
+   ########################################################
+
+####################women's age###############################
+women_age <- df_sel$women_age
+####################women's age###############################
+
+####################women's age squared#######################
+women_age2 <- women_age^2
+####################women's age squared#######################
+
+###################household head's age#######################
+HH_age <- df_sel$HH_age
+###################household head's age#######################
+
+###################household head's age squared###############
+#HH_age2 <- HH_age^2
+###################household head's age squared###############
+
+###############women's age at marriage#########################
+women_agem <- df_sel$women_agem
+###############women's age at marriage#########################
+
+   ########################################################
+   #################Categorical  Variables#################
+   ########################################################
+
+####################women's edu level#########################
+women_edu <- df_sel$women_edu
+# `women_edu` comes from column `WB6A` which give the
+# Highest level of edu level. So if a woman does not
+# have any education, there will be a NA here.
+# In fact, we have another column `welevel` on women's education,
+# and the two columns give the same infomation.
+# We can double check by comparing those two columns:
+# View(cbind(wm$welevel,wm$WB6A))
+# women that didnt go to school are going to have a 0 here
+women_edu[is.na(women_edu)] <- 0
+# remap class 5 (FORMAL ISLAMIC EDUCATION) to 0
+women_edu <- ifelse(women_edu == 5, 0, women_edu)
+# make it binary: 0 (for no education), 1 (has some education)
+women_edu <- ifelse(women_edu > 0, 1, 0)
+women_edu <- factor(women_edu)
+####################women's edu level#########################
+
+###################household Head's edu level#################
+HH_edu <- df_sel$HH_edu
+# remap class 9 (DK/MISSING) to 0
+HH_edu <- ifelse(HH_edu == 9, 0, HH_edu)
+# make it binary: 0 (no education), 1 (has some education)
+HH_edu <- ifelse(HH_edu > 0, 1, 0)
+HH_edu <- factor(HH_edu)
+###################household Head's edu level#################
+
+###################wealth index (3 classes)###################
+table(df_sel$windex5, useNA="ifany")
+# combine the lower 2 levels as well as the higher 2 levels
+windex3 <- case_when(
+    df_sel$windex5 %in% c(1, 2) ~ 1,
+    df_sel$windex5 == 3 ~ 2,
+    df_sel$windex5 %in% c(4, 5) ~ 3
+)
+windex3 <- factor(windex3)
+# we use the middle class as the reference level
+windex3 <- relevel(windex3, ref=2)
+
+windex3 <- model.matrix(~windex3, data = windex3)
+colnames(windex3) <- c(
+  "windex3.Middle.ref",
+  "windex3.Poor",
+  "windex3.Rich"
+)
+###################wealth index (3 classes)###################
+
+########################media access##########################
+media <- df_sel$media_tv + df_sel$media_radio
+media <- ifelse(media >= 1, 1, 0)
+media <- factor(media)
+########################media access##########################
+```
+
+# Hierarchical Poisson Model
+## Utility functions and data
+```{r}
+#######################utility functions######################
+## mvnormal simulation
+rmvnorm<-function(n,mu,Sigma)
+{
+  E<-matrix(rnorm(n*length(mu)),n,length(mu))
+  t(  t(E%*%chol(Sigma)) +c(mu))
+}
+
+## Wishart simulation
+rwish<-function(n,nu0,S0)
+{
+  sS0 <- chol(S0)
+  S<-array( dim=c( dim(S0),n ) )
+  for(i in 1:n)
+  {
+     Z <- matrix(rnorm(nu0 * dim(S0)[1]), nu0, dim(S0)[1]) %*% sS0
+     S[,,i]<- t(Z)%*%Z
+  }
+  S[,,1:n]
+}
+## mvnorm log density
+ldmvnorm<-function(X,mu,Sigma,iSigma=solve(Sigma),dSigma=det(Sigma))
+{
+  Y<-t( t(X)-mu)
+  sum(diag(-.5*t(Y)%*%Y%*%iSigma))  -
+  .5*(  prod(dim(X))*log(2*pi) +     dim(X)[1]*log(dSigma) )
+}
+## Calculate matrix multiplication: (1,Z) %*% Beta
+matmul <- function(Z, Beta){
+nZ <- nrow(Z)
+as.matrix(cbind(rep(1,nZ),Z))%*%as.matrix(Beta)
+}
+#######################utility functions######################
+
+#######################design matrix##########################
+# Design matrix for all varables (random x10 | fixed x36)
+X <- as.matrix(cbind(
+	### random predictors
+  women_age,
+  women_age2,
+  HH_age,
+  #HH_age2,
+  women_agem,
+  women_edu,
+  HH_edu,
+  windex3[,-1],
+  media,
+	### fixed predictor
+  province[,-1],# 33
+  area,
+  other_wives,
+  HH_sex
+))
+# Design matrix for random variabe
+# (the intercept will be add later)
+Z <- as.matrix(cbind(
+  women_age,
+  women_age2,
+  HH_age,
+  #HH_age2,
+  women_agem,
+  women_edu,
+  HH_edu,
+  windex3[,-1],
+  media
+))
+
+# Concat response variable y with design matrix of X
+yX <- cbind(y,X)
+#######################design matrix##########################
+```
+
+## Init
+
+```{r}
+#######################initial values#########################
+q<-dim(Z)[2] + 1# number of columns in Z (10) + 1 (intercept)
+p<-dim(X)[2] + 1# number of columns in X (10+36) + 1 (intercept)
+m<-length(unique(df_sel$stratum)) # number of stratum
+# GAMMA is the (gamma_1, gamma_2,..., gamma_m)^T matrix
+# with each gamma_j is a (1 x q) vector, sequentially stacked over rows
+# So the dimension of GAMMA is (m x q)
+# The initail value for gamma_j is set to zero because
+# gamma_j ~ MVN(0,Sigma)
+GAMMA <- matrix(0, nrow = m, ncol = q)
+
+# eta0: inverse-Wishart prior for Sigma
+eta0 <- q+2
+# The initial mean of the MVN prior of theta
+model <- glm(y~., data = data.frame(yX), family=poisson)
+THETA <- mu0 <- model$coefficients
+
+# The initial variance of the MVN prior for the variance of theta
+# LAMBDA is the inverse of Fisher information matrix
+LAMBDA <- vcov(model)
+
+# another way to calculate LAMBDA, they are close but not the same
+# ny <- dim(X)[1] # ny is the total number of rows
+# X1 <- cbind(rep(1,ny), X) # X1 = (1|X)
+# W <- diag(as.vector(X1%*%THETA))
+# LAMBDA0 <- solve(t(X1)%*%W%*%X1)
+
+# THETA1 stores m rows of ad hoc estimate of regression coefficients theta1
+THETA1 <- NULL
+# stratum_vector stores the labels of all 66 stratum
+stratum_vector <- unique(df_sel$stratum)
+# classical poisson regression on each strata
+# traverse each stratum (total of 66 stratum)
+for (stratum in stratum_vector){
+stratum_data = yX[which(df_sel$stratum==stratum),]
+
+captured <- tryCatch({
+	model <- glm(y~., data = data.frame(stratum_data), family=poisson)
+	THETA1<-rbind(THETA1, model$coeff[c(1:q)])
+}, warning = function(w) {
+	print(stratum)
+	print(w)
+})
+#print(captured)
+}
+
+S0<-cov(THETA1)
+
+# Prepare the list to store data in each stratum separately.
+y.list <- list()
+Z.list <- list()
+X.list <- list()
+wgt.list <- list()
+N <- NULL
+j <- 1
+# traverse all 66 stratum
+for (stratum in stratum_vector){
+y.list[[j]] = y[which(df_sel$stratum==stratum)]
+N[[j]]<-length(which(df_sel$stratum==stratum))
+Z.list[[j]] = Z[which(df_sel$stratum==stratum),]
+X.list[[j]] = X[which(df_sel$stratum==stratum),]
+wgt.list[[j]] = df_sel[which(df_sel$stratum==stratum),c("wgt")]
+j<-j+1
+}
+
+#summary(unlist(N))
+#barplot(unlist(N))
+
+# inverse Lambda_0, inverse S_0
+iL0<-iSigma<-solve(S0)
+
+
+
+## MCMC
+# The accepted count of proposed gamma_j for each stratum (j from 1 to 66)
+ACCEPT.count <- rep(0,m)
+# The accepted count of proposed theta
+ACCEPT.Theta.count <- 0
+SIGMA.post<-NULL
+GAMMA.post<- list()
+THETA.post <- list()
+S=220000
+B=20000
+thin=50
+#######################initial values#########################
+
+#######################debug##################################
+lr_result <- NULL
+delta_lr <- NULL
+is_accepted <- NULL
+theta_proposed <- NULL
+#######################debug##################################
+```
+
+Setup a different variance for different predictors (not used)
+```{r eval=FALSE}
+# library(extraDistr)
+# pmn.theta <- rep(0,p)
+# psd.theta <- NULL
+#
+#
+# # This is to setup a different variance for different coefficient.
+# s <- seq(0.00001, 6, by = 0.00001)
+# for (idx in c(1:p)){
+# 	for(i in 1:length(s)){
+# 	  quant <- qlaplace(0.975, mu = 0, sigma = s[i])
+# 	  if(quant > abs(mu0[idx])+sqrt(diag(LAMBDA)[idx])){
+# 			psd.theta <- c(psd.theta, s[i])
+# 	    break
+# 	  }
+# 	}
+# }
+```
+
+Laplace Prior
+Setup a same variance for all predictors
+```{r}
+library(extraDistr)
+pmn.theta <- rep(0,p)
+
+s <- seq(0.00001, 6, by = 0.00001)
+for(i in 1:length(s)){
+  quant <- qlaplace(0.975, mu = 0, sigma = s[i])
+  if(quant > 6){
+    cat("q = ", quant, "\n")
+    cat("sd = ", s[i], "\n")
+    break
+  }
+}
+psd.theta <- NULL
+psd.theta[1] <- s[i]
+plaplace(6, mu= 0, sigma = s[i])
+
+for(i in 1:length(s)){
+  quant <- qlaplace(0.975, mu = 0, sigma = s[i])
+  if(quant > 1){
+    cat("q = ", quant, "\n")
+    cat("sd = ", s[i], "\n")
+    break
+  }
+}
+psd.theta[c(2:p)] <- s[i]
+plaplace(0.5, mu= 0, sigma = s[i])
+```
+
+## Simulation
+
+```{r eval=FALSE}
+#######################simulation#############################
+set.seed(123)
+start.time <- Sys.time()
+for(s in 1:S)
+{
+	##update Sigma
+	iSigma<-rwish(1,eta0+m, solve( S0+t(GAMMA)%*%(GAMMA)) )
+
+	##update theta
+	# theta proposed
+	# K_theta <- 0.0005
+	#K_theta <- 0.000001
+	K_theta <- 0.05
+	theta.p<-t(rmvnorm(1,THETA,K_theta*LAMBDA))
+	lr<-0
+	for(j in 1:m)
+	{
+		lr <- lr+sum(
+			wgt.list[[j]] * dpois(y.list[[j]],
+				lambda=exp(matmul(Z.list[[j]],GAMMA[j, ]) + matmul(X.list[[j]],theta.p)),log=TRUE),
+			-wgt.list[[j]] * dpois(y.list[[j]],
+				lambda=exp(matmul(Z.list[[j]],GAMMA[j, ]) + matmul(X.list[[j]],THETA)),log=TRUE)
+		)
+	}
+  dlr <-  sum( dlaplace(theta.p, pmn.theta, psd.theta, log=T)) -sum(dlaplace(THETA, pmn.theta, psd.theta, log=T))
+	lr <- lr + dlr
+  ################debug###############
+  delta_lr <- c(delta_lr, dlr)
+  lr_result <- c(lr_result, lr)
+  theta_proposed <- rbind(theta_proposed,t(theta.p))
+  ################debug###############
+  #cat("delta_lr is: ")
+	#cat(delta_lr)
+  #cat(" lr is: ")
+	#print(lr)
+	if( log(runif(1))<lr ) {
+    is_accepted <- c(is_accepted, TRUE)
+		# print("accepted!")
+		ACCEPT.Theta.count<- ACCEPT.Theta.count+1
+		THETA<-theta.p
+	}else{
+    is_accepted <- c(is_accepted, FALSE)
+  }
+
+	##update gamma
+	Sigma<-solve(iSigma) ; dSigma<-det(Sigma)
+	K_gamma = rep(0.2,m)
+	K_gamma[1] <- 0.05
+	K_gamma[6] <- 0.1
+	K_gamma[16] <- 0.1
+	K_gamma[29] <- 0.1
+	K_gamma[31] <- 0.1
+	K_gamma[37] <- 0.1
+	K_gamma[51] <- 0.1
+	K_gamma[60] <- 0.1
+	K_gamma[55] <- 0.1
+	K_gamma[57] <- 0.05
+	K_gamma[60] <- 0.1
+	K_gamma[61] <- 0.1
+	# PD <- outer((sqrt(K_gamma)),(sqrt(K_gamma)) ,"*")
+	# We don't need a 66x66 matrix PD to be the scaling factor:
+	# For one thing the PD %*% Sigma is non-conformable,
+	# and also it's enough to use a scalar as the scaling factor
+	# https://www.maths.lancs.ac.uk/~sherlocc/Publications/rwm.final.pdf
+
+	for(j in 1:m)
+	{
+		# beta proposed (beta^(*)) from multivariate normal (beta_j^(s), V_J^(s)
+	  gamma.p<-t(rmvnorm(1,GAMMA[j,],K_gamma[j]*Sigma))
+	  lr<-sum(
+			wgt.list[[j]] * dpois(y.list[[j]],
+				lambda=exp(matmul(Z.list[[j]],gamma.p) + matmul(X.list[[j]],THETA)),log=TRUE),
+			-wgt.list[[j]] * dpois(y.list[[j]],
+				lambda=exp(matmul(Z.list[[j]],GAMMA[j, ]) + matmul(X.list[[j]],THETA)),log=TRUE),
+			ldmvnorm( t(gamma.p),rep(0,q),Sigma,iSigma=iSigma,dSigma=dSigma ),
+			-ldmvnorm( t(GAMMA[j,]),rep(0,q),Sigma,iSigma=iSigma,dSigma=dSigma )
+		)
+
+	  if( log(runif(1))<lr ) {
+			#print(sprintf("Beta %d Accepted", j ))
+			ACCEPT.count[j] <- ACCEPT.count[j]+1
+			GAMMA[j,]<-gamma.p
+		}
+	}
+
+	##store some output
+	if((s %% thin == 0) & (s > B)) # saving every 10th value
+	{
+		cat("Current iteration index = ", s, "\n")
+		# Print current acceptance rate
+		cat("Current acceptance rate of Theta = ", round((ACCEPT.Theta.count/s)*100, digits = 2),"\n")
+		# save thinned coefficients
+		THETA.post<-rbind(THETA.post,t(THETA))
+		SIGMA.post<-rbind(SIGMA.post,c(Sigma))
+		GAMMA.post[[length(GAMMA.post)+1]]<-GAMMA
+	}
+}
+end.time <- Sys.time()
+#######################simulation#############################
+```
+
+## Save and load results
+
+```{r eval=FALSE}
+RESULTPATH = "./data_output/BHP.Laplace/"
+save(THETA.post, file=paste(RESULTPATH,"THETA.post.S=",S,".RData",sep=""))
+save(SIGMA.post, file=paste(RESULTPATH,"SIGMA.post.S=",S,".RData",sep=""))
+save(ACCEPT.count, file=paste(RESULTPATH,"ACCEPT.count.S=",S,".RData",sep=""))
+save(ACCEPT.Theta.count, file=paste(RESULTPATH,"ACCEPT.Theta.count.S=",S,".RData",sep=""))
+save(GAMMA, file=paste(RESULTPATH,"GAMMA.S=",S,".RData",sep=""))
+save(GAMMA.post, file=paste(RESULTPATH,"GAMMA.post.S=",S,".RData",sep=""))
+```
+
+```{r eval=TRUE}
+RESULTPATH = "./data_output/BHP.Laplace/"
+load(paste(RESULTPATH,"THETA.post.S=",S,".RData",sep=""))
+load(paste(RESULTPATH,"SIGMA.post.S=",S,".RData",sep=""))
+load(paste(RESULTPATH,"ACCEPT.count.S=",S,".RData",sep=""))
+load(paste(RESULTPATH,"ACCEPT.Theta.count.S=",S,".RData",sep=""))
+load(paste(RESULTPATH,"GAMMA.S=",S,".RData",sep=""))
+load(paste(RESULTPATH,"GAMMA.post.S=",S,".RData",sep=""))
+```
+
+# Plot results
+
+## Assess the convergence of the Markov chain
+
+```{r}
+## stationarity plot - boxplot
+stationarity.plot<-function(x,...){
+S<-length(x)
+scan<-1:S
+ng<-min( round(S/100),10)
+group<-S*ceiling( ng*scan/S) /ng
+boxplot(x~group,...)
+}
+```
+
+```{r}
+# convert the result (from list) into a 47x(S-B) matrix
+thin2 = 2
+THETA.post.mat <- NULL
+for (i in c(1:dim(THETA.post)[1])){
+	if(i %% thin2 == 0){
+		# Thin again
+		THETA.post.mat <- cbind(THETA.post.mat, as.matrix(unlist(t(THETA.post)[,i])) )
+	}
+}
+GAMMA.post.mat <- list()
+j <- 1
+for (stratum in stratum_vector){
+	gamma_j <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		if(i %% thin2 == 0){
+		# Thin again
+			gamma_j <- rbind(gamma_j, GAMMA.post[[s]][j, ])
+		}
+	}
+	GAMMA.post.mat[[j]] <- gamma_j
+j<-j+1
+}
+# GAMMA.post.mat Usage: matmul(Z, apply(GAMMA.post.mat[[9]],2,mean))
+SIGMA.post.mat <- NULL
+for (i in c(1:dim(SIGMA.post)[1])){
+	if(i %% thin2 == 0){
+		# Thin again
+		SIGMA.post.mat <- cbind(SIGMA.post.mat, SIGMA.post[i,] )
+	}
+}
+
+ACCEPT.count/S
+#stationarity.plot(THETA.post[, 1],xlab="iteration",ylab=expression(theta[11]))
+par(mfrow = c(8, 6), mar=c(3,2,1,1),mgp=c(2,1,0))
+for (i in 1:p) {
+stationarity.plot(THETA.post.mat[i, ],xlab="iteration",ylab=expression(theta))
+}
+dev.print(pdf,
+	paste(IMAGEOUT,"Laplace.THETA.post.boxplot.pdf",sep=""),
+	width=16,height=12)
+
+# Traceplot
+par(mfrow = c(8, 6), mar=c(3,2,1,1),mgp=c(2,1,0))
+for (i in 1:p) {
+plot(seq(1,dim(THETA.post.mat)[2],by=1), THETA.post.mat[i,], type = "l", xlab = "Iterations", ylab = expression(theta), main=i)
+}
+dev.print(pdf,
+	paste(IMAGEOUT,"Laplace.THETA.post.pdf",sep=""),
+	width=16,height=12)
+
+# ACF plot
+library(coda)
+par(mfrow = c(8, 6), mar=c(3,2,1,1),mgp=c(2,1,0))
+for (i in 1:p){
+esize <- effectiveSize(THETA.post.mat[i,])
+acf_plot <- acf(THETA.post.mat[i,], plot = FALSE)
+t <- paste(i,",Effective Size: ", esize, sep="")
+plot(acf_plot, xlab=t, ylab="", main=t)
+}
+dev.print(pdf,
+	paste(IMAGEOUT,"Laplace.ACF.THETA.post.pdf",sep=""),
+	width=16,height=12)
+
+apply(SIGMA.post, 2, effectiveSize)
+
+# index of sigma
+ind_sigma <- c(1:q)
+for(i in 1:q){
+  ind_sigma[i] <- i+q*(i-1)
+}
+
+par(mfrow=c(3,4))
+for(i in ind_sigma){
+plot(seq(1,dim(SIGMA.post.mat)[2],by=1), SIGMA.post.mat[i,], type = "l", xlab = "Iterations", ylab = expression(sigma^2), main=i)
+}
+dev.print(pdf,
+	paste(IMAGEOUT,"Laplace.SIGMA.post.pdf",sep=""),
+	width=16,height=12)
+
+par(mfrow=c(3,4))
+for(i in ind_sigma){
+acf_plot <- acf(SIGMA.post.mat[i,], plot=FALSE)
+	t=paste(i,",Effective Size: ", esize, sep="")
+plot(acf_plot, xlab=t, ylab="", main=expression(paste("acf(",sigma^2,")",sep="")))
+}
+dev.print(pdf,
+	paste(IMAGEOUT,"Laplace.ACF.SIGMA.post.pdf",sep=""),
+	width=16,height=12)
+```
+
+### Posterior estimates with 95% credible intervals (CI) of the incidence rate ratio (IRR) for the explanatory variables
+
+```{r}
+library(xtable)
+CI_THETA <- round(t(apply(exp(THETA.post.mat), 1, quantile ,probs=c(0.50, 0.025, 0.975))), digits = 5)
+CI_THETA
+xtable(CI_THETA, digits = 3)
+```
+
+## Calculate the expected number of CEB
+
+### Expected Children Ever Born - Woman's age
+
+```{r}
+#CItheta <- apply(THETA.post, MARGIN=2, function(q){return(quantile(unlist(q),prob=c(0.025,0.5,0.975)))})
+Xs <- apply(X, 2, mean)
+Xs <- matrix(rep(Xs, 35), nrow = 35, byrow = T)
+Xs[,1] <- seq(15, 49, by = 1)
+Xs[,2] <- (seq(15, 49, by = 1)^2)
+colnames(Xs) <- colnames(X)
+Xs = cbind(rep(1,35),Xs) # insert the first column of 1 for intercept
+eXB.post <- exp(Xs%*%THETA.post.mat)
+qE<-apply(t(eXB.post),2,quantile,probs=c(.025,.5,.975))
+
+par(mar=c(4,4.5,1,1),mgp=c(1.88,0.50,0))
+plot( c(15, 49),range(c(0,qE)),type="n",xlab="Woman's age",
+      ylab="Expected number of children", cex.lab = 2.5, cex.axis = 1.5)
+lines(seq(15, 49, by = 1), qE[1,],col="black",lwd=0.5)
+lines(seq(15, 49, by = 1), qE[2,],col="black",lwd=1.0)
+lines(seq(15, 49, by = 1), qE[3,],col="black",lwd=0.5)
+dev.print(pdf,
+	paste(IMAGEOUT,"E_women_age.pdf",sep=""),
+	width=16,height=12)
+```
+
+### Expected Children Ever Born - Household Head's age
+
+```{r}
+Xs <- apply(X, 2, mean)
+Xs[,2] <- Xs[,1]^2
+Xs <- matrix(rep(Xs, 85), nrow = 85, byrow = T)
+Xs[,3] <- seq(11, 95, by = 1)
+colnames(Xs) <- colnames(X)
+Xs = cbind(rep(1,85),Xs) # insert the first column of 1 for intercept
+eXB.post <- exp(Xs%*%THETA.post.mat)
+qE<-apply(t(eXB.post),2,quantile,probs=c(.025,.5,.975))
+
+par(mar=c(4,4.5,1,1),mgp=c(1.88,0.50,0))
+plot( c(11, 95),range(c(0,qE)),type="n",xlab="Household head's age",
+      ylab="Expected number of children", cex.lab = 2.5, cex.axis = 1.5, ylim=c(0,8))
+lines(seq(11, 95, by = 1), qE[1,],col="black",lwd=0.5)
+lines(seq(11, 95, by = 1), qE[2,],col="black",lwd=1.0)
+lines(seq(11, 95, by = 1), qE[3,],col="black",lwd=0.5)
+dev.print(pdf,
+	paste(IMAGEOUT,"E_HH_age.pdf",sep=""),
+	width=16,height=12)
+```
+
+### Expected Children Ever Born - Woman's age at marriage
+
+```{r}
+Xs <- apply(X, 2, mean)
+Xs[,2] <- Xs[,1]^2
+Xs <- matrix(rep(Xs, 40), nrow = 40, byrow = T)
+Xs[,4] <- seq(9, 48, by = 1)
+colnames(Xs) <- colnames(X)
+Xs = cbind(rep(1,40),Xs)
+eXB.post <- exp(Xs%*%THETA.post.mat)
+qE<-apply(t(eXB.post),2,quantile,probs=c(.025,.5,.975))
+
+par(mar=c(4,4.5,1,1),mgp=c(1.88,0.50,0))
+plot( c(9, 48),range(c(0,qE)),type="n",xlab="Woman's age at marriage",
+      ylab="Expected number of children", cex.lab = 2.5, cex.axis = 1.5)
+lines(seq(9, 48, by = 1), qE[1,],col="black",lwd=0.5)
+lines(seq(9, 48, by = 1), qE[2,],col="black",lwd=1.0)
+lines(seq(9, 48, by = 1), qE[3,],col="black",lwd=0.5)
+dev.print(pdf,
+	paste(IMAGEOUT,"E_women_agem.pdf",sep=""),
+	width=16,height=12)
+```
+
+### Expected Children Ever Born - Provinces
+
+```{r}
+# Expected Number of Children Ever Born in Afghanistan
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- as.matrix(c(1, Xs))
+eXB.post<- exp(t(t(Xs)%*%THETA.post.mat) )
+qEA<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+round(qEA, digits = 3)
+# Provinces
+
+dnames <- c(
+"Afghanistan",
+"Herat",
+"Kabul",
+"Kapisa",
+"Parwan",
+"Maidan Wardak",
+"Logar",
+"Nangarhar",
+"Laghman",
+"Panjsher",
+"Baghlan",
+"Bamyan",
+"Ghazni",
+"Paktika",
+"Paktya",
+"Khost",
+"Kunarha",
+"Nooristan",
+"Badakhshan",
+"Takhar",
+"Kunduz",
+"Samangan",
+"Balkh",
+"Sar-e-Pul",
+"Ghor",
+"Daykundi",
+"Urozgan",
+"Zabul",
+"Kandahar",
+"Jawzjan",
+"Faryab",
+"Helmand",
+"Badghis",
+"Farah",
+"Nimroz")
+index <- order(dnames)
+
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- matrix(rep(Xs, 34), nrow = 34, byrow = T)
+for (prov_index in c(2:34)){
+	x <- rep(0,34)
+	x[prov_index] <- 1
+	Xs[,(8+prov_index)] <- x
+}
+colnames(Xs) <- colnames(X)
+Xs = cbind(rep(1,34),Xs)
+
+eXB.post<- exp(t(Xs%*%THETA.post.mat) )
+qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+
+index <- order(c(qEA[2,], qE[2,])[-1])
+index <- c(1, index + 1)
+
+library(ggplot2)
+df <- data.frame(x =1:35,
+                 F = c(qEA[2,], qE[2,])[index],
+                 L = c(qEA[1,], qE[1,])[index],
+                 U = c(qEA[3,], qE[3,])[index],
+              name = dnames[index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(title= "Estimates of expected number of children ever born in each province", y = "Expected number of children", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:35), labels = dnames[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 18, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+#dev.print(device = postscript, paste(IMAGEOUT, "E_province.eps",sep=""),width=8,height=8, horizontal = FALSE)
+dev.print(pdf, paste(IMAGEOUT, "E_province.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+library(ggplot2)
+library(sf)
+
+map <- read_sf("data_src/map.json")
+eCEB <- NULL
+for (n in map$name){
+	print(n)
+	print(which(df$name==n))
+	print(df$name[which(df$name==n)])
+	print(df$F[which(df$name==n)])
+	eCEB <- append(eCEB, df$F[which(df$name==n)])
+}
+map$eCEB <- eCEB
+ggplot(map) +
+	geom_sf(aes(fill = eCEB)) +
+	scale_fill_gradient(low="#56B1F7", high="#132B43") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "E_province_map.pdf",sep=""),width=16,height=8)
+```
+
+### Expected Children Ever Born - Wealth Index
+
+```{r}
+winames <- c("Middle", "Poorer", "Richer")
+index <- c(2, 1, 3)
+winames[index]
+
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- as.matrix(c(1, Xs))
+Xs <- matrix(rep(Xs, 3), nrow = 3, byrow = T)
+Xs[,8] <- c(0, 1, 0)
+Xs[,9] <- c(0, 0, 1)
+
+eXB.post<- exp(t(Xs%*%THETA.post.mat) )
+qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+
+df <- data.frame(x =1:3,
+                 F = c(qE[2,])[index],
+                 L = c(qE[1,])[index],
+                 U = c(qE[3,])[index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(title="Estimates of expected number of children ever born against wealth condition", y = "Expected number of children", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:3), labels = winames[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 18, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+
+dev.print(pdf, paste(IMAGEOUT, "E_windex3.pdf",sep=""),width=8,height=8)
+```
+
+### Expected Children Ever Born - Area
+
+```{r}
+# To check the X value for area, 2 for Urban, 1 for Rural
+# (it is flipped because of refactor)
+# unique(as.numeric(area)-X[,44])
+
+anames<- c("Urban", "Rural")
+index <- c(1, 2)
+anames[index]
+
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- as.matrix(c(1, Xs))
+Xs <- matrix(rep(Xs, 2), nrow = 2, byrow = T)
+Xs[,44] <- c(2, 1) # 2 for Urban, 1 for Rural
+
+eXB.post<- exp(t(Xs%*%THETA.post.mat) )
+qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+
+df <- data.frame(x =1:2,
+                 F = c(qE[2,])[index],
+                 L = c(qE[1,])[index],
+                 U = c(qE[3,])[index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(title="Estimates of expected number of children ever born against area", y = "Expected number of children", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:2), labels = anames[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 18, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+
+dev.print(pdf, paste(IMAGEOUT, "E_area.pdf",sep=""),width=8,height=8)
+(qE[2,][1] - qE[2,][2])/qE[2,][2]
+```
+
+### Expected Children Ever Born - Have other wives
+
+```{r}
+otherwives_lables <- c("No", "Yes")
+index <- c(1, 2)
+otherwives_lables[index]
+
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- as.matrix(c(1, Xs))
+Xs <- matrix(rep(Xs, 2), nrow = 2, byrow = T)
+Xs[,46] <- c(0, 1) # 0 for No other wives, 1 for one or more
+
+eXB.post<- exp(t(Xs%*%THETA.post.mat) )
+qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+
+df <- data.frame(x =1:2,
+                 F = c(qE[2,])[index],
+                 L = c(qE[1,])[index],
+                 U = c(qE[3,])[index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(title = "Estimates of expected number of children ever born against number of other wives", y = "Expected number of children", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:2), labels = otherwives_lables[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 18, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+
+dev.print(pdf, paste(IMAGEOUT, "E_other_wives.pdf",sep=""),width=8,height=8)
+(qE[2,][1] - qE[2,][2])/qE[2,][2]
+```
+
+### Expected Children Ever Born - Household Head sex
+
+```{r}
+HH_sex_lables <- c("Male", "Female")
+index <- c(1, 2)
+HH_sex_lables [index]
+
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- as.matrix(c(1, Xs))
+Xs <- matrix(rep(Xs, 2), nrow = 2, byrow = T)
+Xs[,46] <- c(0, 1) # 0 for Male, 1 for Female
+
+eXB.post<- exp(t(Xs%*%THETA.post.mat) )
+qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+
+df <- data.frame(x =1:2,
+                 F = c(qE[2,])[index],
+                 L = c(qE[1,])[index],
+                 U = c(qE[3,])[index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(title = "Estimates of expected number of children ever bornn against Household head sex", y = "Expected number of children", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:2), labels = HH_sex_lables[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 18, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+
+dev.print(pdf, paste(IMAGEOUT, "E_HH_sex.pdf",sep=""),width=8,height=8)
+```
+
+### Expected Children Ever Born - Media exposure
+
+```{r}
+media_lables <- c("No", "Yes")
+index <- c(1, 2)
+media_lables [index]
+
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- as.matrix(c(1, Xs))
+Xs <- matrix(rep(Xs, 2), nrow = 2, byrow = T)
+Xs[,10] <- c(0, 1) # 0 for Male, 1 for Female
+
+eXB.post<- exp(t(Xs%*%THETA.post.mat) )
+qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+
+df <- data.frame(x =1:2,
+                 F = c(qE[2,])[index],
+                 L = c(qE[1,])[index],
+                 U = c(qE[3,])[index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(title="Estimates of expected number of children ever born against media exposure", y = "Expected number of children", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:2), labels = media_lables[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 18, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+
+dev.print(pdf, paste(IMAGEOUT, "E_media.pdf",sep=""),width=8,height=8)
+```
+
+### Expected Children Ever Born - Woman's education
+
+```{r}
+women_edu_lables <- c("No", "Yes")
+index <- c(1, 2)
+women_edu[index]
+
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- as.matrix(c(1, Xs))
+Xs <- matrix(rep(Xs, 2), nrow = 2, byrow = T)
+Xs[,6] <- c(1, 2) # 0 for Male, 1 for Female
+
+eXB.post<- exp(t(Xs%*%THETA.post.mat) )
+qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+
+df <- data.frame(x =1:2,
+                 F = c(qE[2,])[index],
+                 L = c(qE[1,])[index],
+                 U = c(qE[3,])[index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(title = "Estimates of expected number of children ever born against woman's education level", y = "Expected number of children", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:2), labels = women_edu_lables[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 18, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+
+dev.print(pdf, paste(IMAGEOUT, "E_women_edu.pdf",sep=""),width=8,height=8)
+```
+
+### Expected Children Ever Born - Household Head's education
+
+```{r}
+HH_edu_lables <- c("No", "Yes")
+index <- c(1, 2)
+HH_edu_lables[index]
+
+Xs <- apply(X, 2, mean)
+Xs[2] <- Xs[1]^2
+Xs <- as.matrix(c(1, Xs))
+Xs <- matrix(rep(Xs, 2), nrow = 2, byrow = T)
+Xs[,7] <- c(1, 2) # 1 for No, 2 for Yes
+
+eXB.post<- exp(t(Xs%*%THETA.post.mat) )
+qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
+
+df <- data.frame(x =1:2,
+                 F = c(qE[2,])[index],
+                 L = c(qE[1,])[index],
+                 U = c(qE[3,])[index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(title = "Estimates of children ever born against Household head's education level", y = "Expected number of children", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:2), labels = women_edu_lables[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 18, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+
+dev.print(pdf, paste(IMAGEOUT, "E_HH_edu.pdf",sep=""),width=8,height=8)
+```
+
+## Posterior CI of GAMMA + THETA
+
+### To plot the posterior CI of gamma + theta coefficients of women_age
+
+```{r}
+# stratum_vector stores the labels of all 66 stratum
+#stratum_vector <- unique(df_sel$stratum)
+i <- 1
+GAMMA_women_age <- NULL
+stratum_label <- NULL
+stratum_area <- NULL
+stratum_province <- NULL
+for (stratum in stratum_vector){
+	stratum_str <- toString(stratum)
+	area <- substr(stratum_str, nchar(stratum_str), nchar(stratum_str))
+	area <- case_when(
+	    (area == "1") ~ "Urban",
+	    (area == "2") ~ "Rural"
+	)
+	province <- substr(stratum_str, 1, nchar(stratum_str)-1)
+	province <- case_when(
+		(province == "1") ~ "Kabul",
+		(province == "2") ~ "Kapisa",
+		(province == "3") ~ "Parwan",
+		(province == "4") ~ "Maidan Wardak",
+		(province == "5") ~ "Logar",
+		(province == "6") ~ "Nangarhar",
+		(province == "7") ~ "Laghman",
+		(province == "8") ~ "Panjsher",
+		(province == "9") ~ "Baghlan",
+		(province == "10") ~ "Bamyan",
+		(province == "11") ~ "Ghazni",
+		(province == "12") ~ "Paktika",
+		(province == "13") ~ "Paktya",
+		(province == "14") ~ "Khost",
+		(province == "15") ~ "Kunarha",
+		(province == "16") ~ "Nooristan",
+		(province == "17") ~ "Badakhshan",
+		(province == "18") ~ "Takhar",
+		(province == "19") ~ "Kunduz",
+		(province == "20") ~ "Samangan",
+		(province == "21") ~ "Balkh",
+		(province == "22") ~ "Sar-e-Pul",
+		(province == "23") ~ "Ghor",
+		(province == "24") ~ "Daykundi",
+		(province == "25") ~ "Urozgan",
+		(province == "26") ~ "Zabul",
+		(province == "27") ~ "Kandahar",
+		(province == "28") ~ "Jawzjan",
+		(province == "29") ~ "Faryab",
+		(province == "30") ~ "Helmand",
+		(province == "31") ~ "Badghis",
+		(province == "32") ~ "Herat",
+		(province == "33") ~ "Farah",
+		(province == "34") ~ "Nimroz"
+	)
+	stratum_label <- c(stratum_label, paste(province,", ",area,sep=""))
+	stratum_area<- c(stratum_area, area)
+	stratum_province<- c(stratum_province, province)
+
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 2])
+	}
+	GAMMA_women_age <- rbind(GAMMA_women_age, gamma_ij)
+	i <- i+1
+}
+# THETA.post.mat[2,] is the fixed effect of fixed predictor
+qE<-apply(GAMMA_women_age+rep(THETA.post.mat[2,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Women's age", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+#dev.print(device = postscript, paste(IMAGEOUT, "E_province.eps",sep=""),width=8,height=8, horizontal = FALSE)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_age.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_1 (women's age) + Theta at each province in urban area
+library(ggplot2)
+library(sf)
+
+map <- read_sf("data_src/map.json")
+gamma_women_age <- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_women_age <- append(gamma_women_age, 0)
+	}else{
+		gamma_women_age <- append(gamma_women_age, df$F[which(df$province==n & df$area=="Urban")])
+	}
+}
+map$gamma_women_age<- gamma_women_age
+ggplot(map) +
+	geom_sf(aes(fill = gamma_women_age)) +
+	scale_fill_gradientn(colors = c("white", "#56B1F7", "#132B43"),
+	values = scales::rescale(c(0, min(gamma_women_age[gamma_women_age > 0]), max(gamma_women_age))),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_age.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_1 (women's age) + Theta at each province in rural area
+library(ggplot2)
+library(sf)
+
+map <- read_sf("data_src/map.json")
+gamma_women_age <- NULL
+for (n in map$name){
+	gamma_women_age <- append(gamma_women_age, df$F[which(df$province==n & df$area=="Rural")])
+}
+map$gamma_women_age<- gamma_women_age
+ggplot(map) +
+	geom_sf(aes(fill = gamma_women_age)) +
+	scale_fill_gradientn(colors = c("#56B1F7", "#132B43"),
+	values = scales::rescale(c(0, min(gamma_women_age[gamma_women_age > 0]), max(gamma_women_age))),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_age.rural.pdf",sep=""),width=16,height=8)
+```
+
+### The acceptance rate of each gamma
+
+```{r}
+df <- data.frame(x = 1:66,
+                 L = rep(0,66),
+                 U = ACCEPT.count/S)
+abc <- ggplot(df, aes(x = x, y = U)) +
+  labs(y = expression(paste("Acceptance rate of ",gamma[j],sep="")), x = NULL) +
+  geom_point(size = 2) +
+  geom_linerange(aes(ymax = U, ymin = L)) +
+	geom_hline(yintercept = 0.2, color = "red", linetype = "dashed", size = 1) +
+  geom_hline(yintercept = 0.5, color = "red", linetype = "dashed", size = 1) +
+  scale_y_continuous(limits = c(0, 0.6)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+#dev.print(device = postscript, paste(IMAGEOUT, "E_province.eps",sep=""),width=8,height=8, horizontal = FALSE)
+dev.print(pdf, paste(IMAGEOUT, "ACCEPT.rate.GAMMA.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of women_age2
+
+```{r}
+i <- 1
+GAMMA_women_age2 <- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 3])
+	}
+	GAMMA_women_age2 <- rbind(GAMMA_women_age2, gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_women_age2+rep(THETA.post.mat[3,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Women's age squared", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+#dev.print(device = postscript, paste(IMAGEOUT, "E_province.eps",sep=""),width=8,height=8, horizontal = FALSE)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_age2.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_2 (women's age squared) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_women_age2 <- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_women_age2 <- append(gamma_women_age2, 0)
+	}else{
+		gamma_women_age2 <- append(gamma_women_age2, df$F[which(df$province==n & df$area=="Urban")])
+	}
+}
+map$gamma_women_age2<- gamma_women_age2
+ggplot(map) +
+	geom_sf(aes(fill = gamma_women_age2)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_women_age2), max(gamma_women_age2[gamma_women_age2 < 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_age2.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_2 (women's age squared) + Theta at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_women_age2 <- NULL
+for (n in map$name){
+	gamma_women_age2 <- append(gamma_women_age2, df$F[which(df$province==n & df$area=="Rural")])
+}
+map$gamma_women_age2<- gamma_women_age2
+ggplot(map) +
+	geom_sf(aes(fill = gamma_women_age2)) +
+	scale_fill_gradientn(colors = c("#56B1F7", "#132B43"),
+	values = scales::rescale(c(0, min(gamma_women_age2), max(gamma_women_age2[gamma_women_age2 < 0]))),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_age2.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of HH_age
+
+```{r}
+i <- 1
+GAMMA_HH_age<- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 4])
+	}
+	GAMMA_HH_age<- rbind(GAMMA_HH_age, gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_HH_age+rep(THETA.post.mat[4,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Household head's age", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+#dev.print(device = postscript, paste(IMAGEOUT, "E_province.eps",sep=""),width=8,height=8, horizontal = FALSE)
+dev.print(pdf, paste(IMAGEOUT, "BETA.HH_age.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_3 (Household head's age) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_HH_age<- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_HH_age<- append(gamma_HH_age, 0)
+	}else{
+		if (df$L[which(df$province==n & df$area=="Urban")] > 0 | df$U[which(df$province==n & df$area=="Urban")] < 0)
+		{
+			significant_gamma <- df$F[which(df$province==n & df$area=="Urban")]
+		}else{
+			significant_gamma <- 0
+		}
+		gamma_HH_age<- append(gamma_HH_age, significant_gamma)
+	}
+}
+map$gamma_HH_age<- gamma_HH_age
+ggplot(map) +
+	geom_sf(aes(fill = gamma_HH_age)) +
+	scale_fill_gradientn(colors = c("white", "#56B1F7", "#132B43"),
+	values = scales::rescale(c(0, min(gamma_HH_age[gamma_HH_age> 0]), max(gamma_HH_age))),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.HH_age.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_3 (Household head's age) + Theta at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_HH_age<- NULL
+for (n in map$name){
+	if (df$L[which(df$province==n & df$area=="Rural")] > 0 | df$U[which(df$province==n & df$area=="Rural")] < 0)
+	{
+		significant_gamma <- df$F[which(df$province==n & df$area=="Rural")]
+	}else{
+		significant_gamma <- 0
+	}
+	gamma_HH_age<- append(gamma_HH_age, significant_gamma)
+}
+map$gamma_HH_age<- gamma_HH_age
+ggplot(map) +
+	geom_sf(aes(fill = gamma_HH_age)) +
+	scale_fill_gradientn(colors = c("white", "#56B1F7", "#132B43"),
+	values = scales::rescale(c(0, min(gamma_HH_age[gamma_HH_age> 0]), max(gamma_HH_age))),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.HH_age.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of HH_age2
+
+```{r}
+i <- 1
+GAMMA_HH_age2<- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 5])
+	}
+	GAMMA_HH_age2<- rbind(GAMMA_HH_age2, gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_HH_age2+rep(THETA.post.mat[5,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Household head's age squared", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+#dev.print(device = postscript, paste(IMAGEOUT, "E_province.eps",sep=""),width=8,height=8, horizontal = FALSE)
+dev.print(pdf, paste(IMAGEOUT, "BETA.HH_age2.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_4 (Household head's age squared) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_HH_age2<- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_HH_age2<- append(gamma_HH_age2, 0)
+	}else{
+		if (df$L[which(df$province==n & df$area=="Urban")] > 0 | df$U[which(df$province==n & df$area=="Urban")] < 0)
+		{
+			significant_gamma <- df$F[which(df$province==n & df$area=="Urban")]
+		}else{
+			significant_gamma <- 0
+		}
+		gamma_HH_age2<- append(gamma_HH_age2, significant_gamma)
+	}
+}
+map$gamma_HH_age2<- gamma_HH_age2
+ggplot(map) +
+	geom_sf(aes(fill = gamma_HH_age2)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_HH_age2), max(gamma_HH_age2[gamma_HH_age2< 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.HH_age2.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_4 (Household head's age squared) + Theta at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_HH_age2<- NULL
+for (n in map$name){
+	if (df$L[which(df$province==n & df$area=="Rural")] > 0 | df$U[which(df$province==n & df$area=="Rural")] < 0)
+	{
+		significant_gamma <- df$F[which(df$province==n & df$area=="Rural")]
+	}else{
+		significant_gamma <- 0
+	}
+	gamma_HH_age2<- append(gamma_HH_age2, significant_gamma)
+}
+map$gamma_HH_age2<- gamma_HH_age2
+ggplot(map) +
+	geom_sf(aes(fill = gamma_HH_age2)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_HH_age2), max(gamma_HH_age2[gamma_HH_age2< 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.HH_age2.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of women_agem
+
+```{r}
+i <- 1
+GAMMA_women_agem <- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 6])
+	}
+	GAMMA_women_agem <- rbind(GAMMA_women_agem, gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_women_agem+rep(THETA.post.mat[6,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Women's age at marriage", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+#dev.print(device = postscript, paste(IMAGEOUT, "E_province.eps",sep=""),width=8,height=8, horizontal = FALSE)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_agem.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_5 (women's age at marriage) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_women_agem<- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_women_agem<- append(gamma_women_agem, 0)
+	}else{
+		if (df$L[which(df$province==n & df$area=="Urban")] > 0 | df$U[which(df$province==n & df$area=="Urban")] < 0)
+		{
+			significant_gamma <- df$F[which(df$province==n & df$area=="Urban")]
+		}else{
+			significant_gamma <- 0
+		}
+		gamma_women_agem<- append(gamma_women_agem, significant_gamma)
+	}
+}
+map$gamma_women_agem<- gamma_women_agem
+ggplot(map) +
+	geom_sf(aes(fill = gamma_women_agem)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_women_agem), max(gamma_women_agem[gamma_women_agem< 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_agem.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_5 (women's age at marriage) + Theta at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_women_agem<- NULL
+for (n in map$name){
+	if (df$L[which(df$province==n & df$area=="Rural")] > 0 | df$U[which(df$province==n & df$area=="Rural")] < 0)
+	{
+		significant_gamma <- df$F[which(df$province==n & df$area=="Rural")]
+	}else{
+		significant_gamma <- 0
+	}
+	gamma_women_agem<- append(gamma_women_agem, significant_gamma)
+}
+map$gamma_women_agem<- gamma_women_agem
+ggplot(map) +
+	geom_sf(aes(fill = gamma_women_agem)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7"),
+	values = scales::rescale(c(min(gamma_women_agem), max(gamma_women_agem))),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_agem.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of women_edu
+
+```{r}
+i <- 1
+GAMMA_women_edu <- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 7])
+	}
+	GAMMA_women_edu <- rbind(GAMMA_women_edu , gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_women_edu+rep(THETA.post.mat[7,],66) ,1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Women's education level", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_edu.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_6 (women's education) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_women_edu<- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_women_edu<- append(gamma_women_edu, 0)
+	}else{
+		if (df$L[which(df$province==n & df$area=="Urban")] > 0 | df$U[which(df$province==n & df$area=="Urban")] < 0)
+		{
+			significant_gamma <- df$F[which(df$province==n & df$area=="Urban")]
+		}else{
+			significant_gamma <- 0
+		}
+		gamma_women_edu<- append(gamma_women_edu, significant_gamma)
+	}
+}
+map$gamma_women_edu<- gamma_women_edu
+ggplot(map) +
+	geom_sf(aes(fill = gamma_women_edu)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_women_edu), max(gamma_women_edu[gamma_women_edu< 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_edu.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_6 (women's education) + Theta at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_women_edu<- NULL
+for (n in map$name){
+	if (df$L[which(df$province==n & df$area=="Rural")] > 0 | df$U[which(df$province==n & df$area=="Rural")] < 0)
+	{
+		significant_gamma <- df$F[which(df$province==n & df$area=="Rural")]
+	}else{
+		significant_gamma <- 0
+	}
+	gamma_women_edu<- append(gamma_women_edu, significant_gamma)
+}
+map$gamma_women_edu<- gamma_women_edu
+ggplot(map) +
+	geom_sf(aes(fill = gamma_women_edu)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_women_edu), max(gamma_women_edu[gamma_women_edu< 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.women_edu.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of HH_edu
+
+```{r}
+i <- 1
+GAMMA_HH_edu <- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 8])
+	}
+	GAMMA_HH_edu <- rbind(GAMMA_HH_edu , gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_HH_edu +rep(THETA.post.mat[8,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Household head's education level", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+dev.print(pdf, paste(IMAGEOUT, "BETA.HH_edu.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_7 (Household head's education) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_HH_edu<- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_HH_edu<- append(gamma_HH_edu, 0)
+	}else{
+		if (df$L[which(df$province==n & df$area=="Urban")] > 0 | df$U[which(df$province==n & df$area=="Urban")] < 0)
+		{
+			significant_gamma <- df$F[which(df$province==n & df$area=="Urban")]
+		}else{
+			significant_gamma <- 0
+		}
+		gamma_HH_edu<- append(gamma_HH_edu, significant_gamma)
+	}
+}
+map$gamma_HH_edu<- gamma_HH_edu
+ggplot(map) +
+	geom_sf(aes(fill = gamma_HH_edu)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_HH_edu), max(gamma_HH_edu[gamma_HH_edu< 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.HH_edu.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_7 (Household head's education) at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_HH_edu<- NULL
+for (n in map$name){
+	if (df$L[which(df$province==n & df$area=="Rural")] > 0 | df$U[which(df$province==n & df$area=="Rural")] < 0)
+	{
+		significant_gamma <- df$F[which(df$province==n & df$area=="Rural")]
+	}else{
+		significant_gamma <- 0
+	}
+	gamma_HH_edu<- append(gamma_HH_edu, significant_gamma)
+}
+map$gamma_HH_edu<- gamma_HH_edu
+ggplot(map) +
+	geom_sf(aes(fill = gamma_HH_edu)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_HH_edu), max(gamma_HH_edu[gamma_HH_edu< 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "GAMMA.HH_edu.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of wealth_index_Poor
+
+```{r}
+i <- 1
+GAMMA_poor<- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 11])
+	}
+	GAMMA_poor <- rbind(GAMMA_poor , gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_poor+rep(THETA.post.mat[9,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Wealth Index (Poor)", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+dev.print(pdf, paste(IMAGEOUT, "BETA.windex.poor.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_8 (Wealth - poor) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_windex_poor<- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_windex_poor<- append(gamma_windex_poor, 0)
+	}else{
+		if (df$L[which(df$province==n & df$area=="Urban")] > 0 | df$U[which(df$province==n & df$area=="Urban")] < 0)
+		{
+			significant_gamma <- df$F[which(df$province==n & df$area=="Urban")]
+		}else{
+			significant_gamma <- 0
+		}
+		gamma_windex_poor<- append(gamma_windex_poor, significant_gamma)
+	}
+}
+# Add gamma_windex_poor to the map data
+map$gamma_windex_poor<- gamma_windex_poor
+
+# Define the custom color scale
+color_scale <- c("#a94e08", "#ecd4bc", "white", "#56B1F7", "#132B43")
+
+# Define the values for the color scale
+min_value <- min(gamma_windex_poor, na.rm = TRUE)
+max_negative_value <- max(gamma_windex_poor[gamma_windex_poor < 0], na.rm = TRUE)
+min_positive_value <- min(gamma_windex_poor[gamma_windex_poor > 0], na.rm = TRUE)
+max_value <- max(gamma_windex_poor, na.rm = TRUE)
+
+ggplot(map) +
+	geom_sf(aes(fill = gamma_windex_poor)) +
+	scale_fill_gradientn(colors = color_scale,
+	values = scales::rescale(c(min_value, max_negative_value, 0, min_positive_value, max_value)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.windex.poor.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_8 (Wealth - poor) + Theta at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_windex_poor<- NULL
+for (n in map$name){
+	if (df$L[which(df$province==n & df$area=="Rural")] > 0 | df$U[which(df$province==n & df$area=="Rural")] < 0)
+	{
+		significant_gamma <- df$F[which(df$province==n & df$area=="Rural")]
+	}else{
+		significant_gamma <- 0
+	}
+	gamma_windex_poor<- append(gamma_windex_poor, significant_gamma)
+}
+map$gamma_windex_poor<- gamma_windex_poor
+ggplot(map) +
+	geom_sf(aes(fill = gamma_windex_poor)) +
+	scale_fill_gradientn(colors = c("white", "#56B1F7", "#132B43"),
+	values = scales::rescale(c(0, min(gamma_windex_poor[gamma_windex_poor > 0]), max(gamma_windex_poor))),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.windex.poor.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of wealth_index_Rich
+
+```{r}
+i <- 1
+GAMMA_rich<- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 11])
+	}
+	GAMMA_rich <- rbind(GAMMA_rich , gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_rich+rep(THETA.post.mat[10,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Wealth Index (Rich)", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+dev.print(pdf, paste(IMAGEOUT, "BETA.windex.rich.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_9 (Wealth - rich) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_windex_rich<- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_windex_rich<- append(gamma_windex_rich, 0)
+	}else{
+		if (df$L[which(df$province==n & df$area=="Urban")] > 0 | df$U[which(df$province==n & df$area=="Urban")] < 0)
+		{
+			significant_gamma <- df$F[which(df$province==n & df$area=="Urban")]
+		}else{
+			significant_gamma <- 0
+		}
+		gamma_windex_rich<- append(gamma_windex_rich, significant_gamma)
+	}
+}
+# Add gamma_windex_rich to the map data
+map$gamma_windex_rich<- gamma_windex_rich
+
+# Define the custom color scale
+color_scale <- c("#132B43", "#56B1F7", "white")
+
+# Define the values for the color scale
+min_value <- min(gamma_windex_rich, na.rm = TRUE)
+max_negative_value <- max(gamma_windex_rich[gamma_windex_rich < 0], na.rm = TRUE)
+min_positive_value <- min(gamma_windex_rich[gamma_windex_rich > 0], na.rm = TRUE)
+max_value <- max(gamma_windex_rich, na.rm = TRUE)
+
+ggplot(map) +
+	geom_sf(aes(fill = gamma_windex_rich)) +
+	scale_fill_gradientn(colors = color_scale,
+	values = scales::rescale(c(min_value, max_negative_value, 0 )),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.windex.rich.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_9 (Wealth - rich) + Theta at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_windex_rich<- NULL
+for (n in map$name){
+	if (df$L[which(df$province==n & df$area=="Rural")] > 0 | df$U[which(df$province==n & df$area=="Rural")] < 0)
+	{
+		significant_gamma <- df$F[which(df$province==n & df$area=="Rural")]
+	}else{
+		significant_gamma <- 0
+	}
+	gamma_windex_rich<- append(gamma_windex_rich, significant_gamma)
+}
+map$gamma_windex_rich<- gamma_windex_rich
+ggplot(map) +
+	geom_sf(aes(fill = gamma_windex_rich)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_windex_rich), max(gamma_windex_rich[gamma_windex_rich < 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.windex.rich.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the posterior CI of gamma + theta coefficients of media
+
+```{r}
+i <- 1
+GAMMA_media <- NULL
+for (stratum in stratum_vector){
+	gamma_ij <- NULL
+	for (s in c(1:length(GAMMA.post))){
+		gamma_ij <- c(gamma_ij, GAMMA.post[[s]][i, 11])
+	}
+	GAMMA_media <- rbind(GAMMA_media , gamma_ij)
+	i <- i+1
+}
+qE<-apply(GAMMA_media+rep(THETA.post.mat[11,],66),1,quantile,probs=c(.025,.5,.975))
+index <- order(qE[2,])
+
+df <- data.frame(x = 1:66,
+          province = stratum_province,
+              area = stratum_area,
+                 F = qE[2,][index],
+                 L = qE[1,][index],
+                 U = qE[3,][index])
+abc <- ggplot(df, aes(x = x, y = F)) +
+  labs(y = "coefficients of Women's media exposure", x = NULL) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = U, ymin = L)) +
+  scale_x_continuous(breaks = c(1:66), labels = stratum_label[index]) +
+  theme(axis.title=element_text(size=18), axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.ticks.x = element_line(color = "black", linewidth = 1),
+        axis.text.y = element_text(size = 18, color = "black"),
+        axis.ticks.y = element_line(color = "black", linewidth = 1))
+print(abc)
+dev.print(pdf, paste(IMAGEOUT, "BETA.media.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_10 (media) + Theta at each province in urban area
+map <- read_sf("data_src/map.json")
+gamma_media<- NULL
+for (n in map$name){
+	# In province Nooristan and Panjsher, there is no urban areas
+	if (n == "Nooristan" | n == "Panjsher"){
+		gamma_media<- append(gamma_media, 0)
+	}else{
+		if (df$L[which(df$province==n & df$area=="Urban")] > 0 | df$U[which(df$province==n & df$area=="Urban")] < 0)
+		{
+			significant_gamma <- df$F[which(df$province==n & df$area=="Urban")]
+		}else{
+			significant_gamma <- 0
+		}
+		gamma_media<- append(gamma_media, significant_gamma)
+	}
+}
+# Add gamma_media to the map data
+map$gamma_media<- gamma_media
+
+# Define the custom color scale
+color_scale <- c("#132B43", "#56B1F7", "white")
+
+# Define the values for the color scale
+min_value <- min(gamma_media, na.rm = TRUE)
+max_negative_value <- max(gamma_media[gamma_media < 0], na.rm = TRUE)
+min_positive_value <- min(gamma_media[gamma_media > 0], na.rm = TRUE)
+max_value <- max(gamma_media, na.rm = TRUE)
+
+ggplot(map) +
+	geom_sf(aes(fill = gamma_media)) +
+	scale_fill_gradientn(colors = color_scale,
+	values = scales::rescale(c(min_value, max_negative_value, 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.media.urban.pdf",sep=""),width=16,height=8)
+```
+
+```{r}
+# Coefficients of GAMMA_10 (media) + Theta at each province in rural area
+map <- read_sf("data_src/map.json")
+gamma_media<- NULL
+for (n in map$name){
+	if (df$L[which(df$province==n & df$area=="Rural")] > 0 | df$U[which(df$province==n & df$area=="Rural")] < 0)
+	{
+		significant_gamma <- df$F[which(df$province==n & df$area=="Rural")]
+	}else{
+		significant_gamma <- 0
+	}
+	gamma_media<- append(gamma_media, significant_gamma)
+}
+map$gamma_media<- gamma_media
+ggplot(map) +
+	geom_sf(aes(fill = gamma_media)) +
+	scale_fill_gradientn(colors = c("#132B43", "#56B1F7", "white"),
+	values = scales::rescale(c(min(gamma_media), max(gamma_media[gamma_media < 0]), 0)),
+	guide = "colorbar") +
+	geom_sf_label(aes(label = name), size = 3)
+dev.print(pdf, paste(IMAGEOUT, "BETA.media.rural.pdf",sep=""),width=16,height=8)
+```
+
+### To plot the POSTERIOR CI of Gamma of each stratum
+
+```{r}
+pdf(paste(IMAGEOUT,"GAMMA.post.pdf",sep=""), width=7, height=7)
+par(mar=c(14,4.5,1,1),mgp=c(1.88,0.50,0))
+for (strata in seq(1,m,1)){
+	gammastrata <- NULL
+	for (i in seq(1,(S-B)/thin,by=1)){
+  # BETA.post[[i]] is the beta_j at ith simulation (thinned)
+	gammastrata <- rbind(gammastrata, GAMMA.post[[i]][strata,])
+	}
+  # Credible Interval of beta_j at strata
+	CIgammastrata <- apply(gammastrata, MARGIN=2, quantile, prob=c(0.025,0.5,0.975))
+	Significant <- apply(CIgammastrata, MARGIN=2, function(q){return(ifelse(q[1]<0 & q[3]>0, FALSE, TRUE))})
+	Meangammastrata<- apply(gammastrata, MARGIN=2, mean)
+	CIgammastrata <- rbind(CIgammastrata, Significant, Meangammastrata)
+	plot(1:q,type="n", ylab=expression(gamma[i]), xlab="", xlim=c(0,q+2), ylim=c(-4,3.5),xaxt="n", main=strata)
+  for (i in 1:q){
+	color=ifelse(CIgammastrata[4,i],"red","gray")
+	segments(i,CIgammastrata[1,i],i,CIgammastrata[3,i], lwd=2,
+	col=color)
+	#points(i, CItheta[1, i], pch=4, col=color)
+	points(i, CIgammastrata[2, i], col=color)
+	#points(i, CItheta[3, i], pch=4, col=color)
+	}
+	text(x = 1:q,
+	     y = par("usr")[3] - 0.1,
+	     labels = colnames(CIgammastrata),
+	     xpd = NA,
+	     srt = 45,
+	     cex = 1.2,
+	     adj = 1)
+	abline(h=0, lty=2, col="GRAY")
+}
+dev.off()
+```
+
+## Dispersion Test
+
+```{r}
+fit.mle <- glm(y~., data = data.frame(yX), family=poisson)
+library(AER)
+dispersiontest(fit.mle, alternative = "less")
+```
+
+```{r}
+pdf(paste(IMAGEOUT,"CEB_Freq.pdf",sep=""), width=10)
+par(mar=c(4,4.5,1,1),mgp=c(1.88,0.50,0))
+barplot(table(y), ylab="Frequency",
+        xlab="Number of children ever born", cex.lab = 2, names.arg=c(0:18), font.axis = 2.5)
+dev.off()
+```
+
+```{r}
+# BIC_h for the Hierarchical Model
+n<-length(y)
+MLE <- 0
+for(j in 1:m)
+{
+MLE <- MLE + sum(wgt.list[[j]] * dpois(y.list[[j]], lambda=exp(matmul(Z.list[[j]], apply(GAMMA.post.mat[[j]],2,mean)) + matmul(X.list[[j]],as.matrix(apply(THETA.post.mat, 1, mean)) )),log=TRUE))
+}
+BIC_h <- q * log(m) + p * log(n) - 2 * MLE
+print(BIC_h)
+```
