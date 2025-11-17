@@ -11,7 +11,7 @@ output: pdf_document
 ```{r}
 library(haven)
 library(dplyr)
-IMAGEOUT="./pics/BHP.SS/"
+IMAGEOUT="./pics/BHP.Cauchy/"
 # wm and hh are original data from UNICEF
 # `arrange` to sort the data, won't change the result
 wm <- read_sav("data_src/wm.sav")
@@ -468,76 +468,27 @@ S=220000
 B=20000
 thin=50
 #######################initial values#########################
-```
 
-```{r}
-if(!require(mvtnorm)) install.packages("mvtnorm", dependencies=TRUE)
-library(mvtnorm)
-library(extraDistr)
-
-# Density function for spike and slab prior
-# ps is the proportion of spike
-dCSS <- function(x, df_spike, location_spike, scale_spike, df_slab, location_slab, scale_slab, ps) {
-  spike_density <- dlst(x,df_spike,location_spike,sigma=scale_spike)
-  slab_density <- dlst(x,df_slab,location_slab,sigma=scale_slab)
-  ps * spike_density + (1 - ps) * slab_density
-}
-
-# dCSS is the density function for the spike-and-slab prior, where x is the input value, df_spike and df_slab are the degrees of freedom for the spike and slab Student-t distributions respectively, location_spike and location_slab are the location parameters (means) for the spike and slab respectively, scale_spike and scale_slab are the scale parameters (standard deviations) for the spike and slab respectively, and p_spike is the probability weight of the spike component.
-
-# Cumulative distribution function for spike and slab prior
-pCSS <- function(q, df_spike, location_spike, scale_spike, df_slab, location_slab, scale_slab, ps) {
-  spike_cdf <- plst(q, df_spike, location_spike, scale_spike)
-  slab_cdf <- plst(q, df_slab, location_slab, scale_slab)
-  ps* spike_cdf + (1 - ps) * slab_cdf
-}
-
-# Inverse cumulative distribution function (quantile function) for spike and slab prior
-qCSS <- function(p, df_spike, location_spike, scale_spike, df_slab, location_slab, scale_slab, ps, lower = -10, upper = 10, tol = 1e-8) {
-
-  # Function to find the root of F(q) - p = 0
-  f_root <- function(q) {
-    pCSS(q, df_spike, location_spike, scale_spike, df_slab, location_slab, scale_slab, ps) - p
-  }
-
-  # Use uniroot to find the quantile corresponding to the probability p
-  result <- uniroot(f_root, lower = lower, upper = upper, tol = tol)
-
-  # Return the quantile (root)
-  return(result$root)
-}
-
-x <- seq(-6,6,by=0.1)
-#ys <- dlst(x,df=2,0,0.1)
-#yss <- dlst(x,df=2,0,0.2)
-#ysss <- dlst(x,df=2,0,0.3)
-#yssss <- dlst(x,df=2,0,0.4)
-ys <- dCSS(x,df_spike = 2, location_spike=0, scale_spike=2.05467, df_slab = 2, location_slab=0, scale_slab = 0.02, ps=0.5)
-yss <- dCSS(x,df_spike = 2, location_spike=0, scale_spike=0.169632, df_slab = 2, location_slab=0, scale_slab = 0.02, ps=0.5)
-pCSS(-0.5,df_spike = 2, location_spike=0, scale_spike=0.169632, df_slab = 2, location_slab=0, scale_slab = 0.02, ps=0.5)
-pCSS(6,df_spike = 2, location_spike=0, scale_spike=2.054671, df_slab = 2, location_slab=0, scale_slab = 0.02, ps=0.5)
-par(mar=c(4,4.5,1,1),mgp=c(1.88,0.50,0))
-plot(x, ys, type = "l", lty = 1, ylab = "PDF", xlab = "", cex.lab = 2, col = 1, ylim=c(0,12))
-lines(x, yss, lty = 1, col = 2)
-#lines(x, ysss, lty = 1, col = 3)
-#lines(x, yssss, lty = 1, col = 4)
+#######################debug##################################
+lr_result <- NULL
+delta_lr <- NULL
+is_accepted <- NULL
+theta_proposed <- NULL
+#######################debug##################################
 ```
 
 Setup a different variance for different predictors (not used)
 ```{r}
-#df_spike <- 2
-#location_spike <- 0
-#df_slab <- 2
-#location_slab <- 0
-#p_spike <- 0.5
-#scale_spike <- 0.00001
-#
+#library(extraDistr)
 #pmn.theta <- rep(0,p)
 #psd.theta <- NULL
-#s <- seq(0.0000001, 6, by = 0.0001) # scale_slab
+#
+#
+## This is to setup a different variance for differnet coefficient.
+#s <- seq(0.00001, 6, by = 0.00001)
 #for (idx in c(1:p)){
 #	for(i in 1:length(s)){
-#	  quant <- qCSS(0.975, df_spike, location_spike, scale_spike, df_slab, location_slab, s[i] , p_spike)
+#	  quant <- qcauchy(0.975, location = 0, scale = s[i])
 #	  if(quant > abs(mu0[idx])+sqrt(diag(LAMBDA)[idx])){
 #			psd.theta <- c(psd.theta, s[i])
 #	    break
@@ -548,88 +499,39 @@ Setup a different variance for different predictors (not used)
 
 Setup a same variance for all predictors
 ```{r}
-df_spike <- 2
-location_spike <- 0
-df_slab <- 2
-location_slab <- 0
-p_spike <- 0.2
-scale_slab <- 0.02
-
 pmn.theta <- rep(0,p)
 psd.theta <- NULL
+s <- seq(0.00001, 6, by = 0.00001)
+for(i in 1:length(s)){
+  quant <- qcauchy(0.975, location = 0, scale = s[i])
+  if(quant > 6){
+    cat("q = ", quant, "\n")
+    cat("sd = ", s[i], "\n")
+    break
+  }
+}
+psd.theta[1] <- s[i]
 
-# find the scale_spike that makes 95% coverage for [-6,6], (result=2.054671)
-# s <- seq(0.00001, 6, by = 0.00001)
-# for(i in 1:length(s)){
-#   quant <- qCSS(0.975, df_spike, location_spike, s[i], df_slab, location_slab, scale_slab , p_spike)
-#   if(quant > 6){
-#   	cat("q = ", quant, "\n")
-#   	cat("sd = ", s[i], "\n")
-#     break
-#   }
-# }
-# psd.theta[1] <- s[i]
-
-# find the scale_spike that makes 95% coverage for [-0.5,0.5], (result=0.169632)
-# for(i in 1:length(s)){
-#   quant <- qCSS(0.975, df_spike, location_spike, s[i], df_slab, location_slab, scale_slab , p_spike)
-#   if(quant > 1){
-#     cat("q = ", quant, "\n")
-#     cat("sd = ", s[i], "\n")
-#     break
-#   }
-# }
-# psd.theta[c(2:p)] <- s[i]
-
-#3.7411505  0.620573
-#psd.theta <- c(2.054671,rep(0.169632,p-1))
-#psd.theta <- c(2.054771,rep(0.1708331,p-1))
-psd.theta <- c(3.7411505,rep(0.620573,p-1))
-```
-
-```{r}
-x <- seq(-1, 1, by = 0.0001)
-#ys1 <- dCSS(x, df_spike, location_spike, 0.169632, df_slab, location_slab, scale_slab, p_spike)
-#ys2 <- dCSS(x, df_spike, location_spike, 0.1708331, df_slab, location_slab, 0.01, p_spike)
-#ys3 <- dCSS(x, df_spike, location_spike, 0.15, df_slab, location_slab, 0.072885, p_spike)
-ys1 <- dCSS(x, df_spike, location_spike, 0.620573, df_slab, location_slab, scale_slab, p_spike)
-
-par(mar=c(4,4.5,1,1),mgp=c(1.5,-1,0))
-plot(x, dnorm(x, mean=0, sd=0.51022), type="l", lty=1, lwd = 3, col=1, ylim=c(0,15), ylab = "Prior densities", xlab = expression(paste(theta[k])), cex.lab = 2)
-lines(x, dlaplace(x, mu=0, sigma=0.33381), lty=1, lwd = 3, col=2)
-lines(x, dcauchy(x, location = 0, scale = 0.07871), lty=1, lwd = 3, col=3)
-lines(x, ys1, type = "l", lty = 1, lwd = 3, cex.lab = 2, col = 4)
-
-legend(0.05, 9, c(
-	expression(paste("Normal (",sigma,"=0.510)")),
-	expression(paste("Laplace (",sigma,"=0.334)")),
-	expression(paste("Cauchy (",sigma,"=0.079)")),
-	expression(paste("SS (",sigma[l], "=0.621,",sigma[s],"=0.020)"))),
-	lty = c(1, 1, 1, 1 ), lwd = c(3,3,3,3), col = c(1,2,3,4), cex = 1.5, bty = "n", xpd = TRUE)
-dev.print(pdf, paste(IMAGEOUT, "Priors.Predictors.pdf",sep=""),width=10,height=6)
+for(i in 1:length(s)){
+  quant <- qcauchy(0.975, location = 0, scale = s[i])
+  if(quant > 1){
+    cat("q = ", quant, "\n")
+    cat("sd = ", s[i], "\n")
+    break
+  }
+}
+psd.theta[c(2:p)] <- rep(s[i], p-1)
 ```
 
 ```{r}
 x <- seq(-6, 6, by = 0.0001)
-ys1 <- dCSS(x, df_spike, location_spike, 3.7411505 , df_slab, location_slab, scale_slab, p_spike)
-#ys2 <- dCSS(x, df_spike, location_spike, 2.054771, df_slab, location_slab, 0.01, p_spike)
+yc <- dcauchy(x, location = 0, scale = 0.47222)
+plot(x, yc, type = "l", lty = 1, ylab = "Prior densities", xlab = "", cex.lab = 2, col = 1, ylim=c(0,10))
 
-par(mar=c(4,4.5,1,1),mgp=c(1.5,-1,0))
-plot(x, dnorm(x, mean=0, sd=3.06129), type="l", lwd = 3, col=1, ylab = "Prior densities", xlab = expression(theta[1]), ylim=c(0,15), cex.lab = 2)
-lines(x, dlaplace(x, mu=0, sigma=2.00285), lty=1, lwd = 3, col=2)
-lines(x, dcauchy(x, location = 0, scale = 0.47222), lty=1, lwd = 3, col=3)
-lines(x, ys1, lty = 1, lwd = 3,  cex.lab = 2, col = 4)
-#lines(x, ys2, lty = 1, col = 2)
+yc <- dcauchy(x, location = 0, scale = 0.03936)
+lines(x, yc, lty = 1, col = 2)
 
-legend(0, 9, c(
-	expression(paste("Normal (",sigma,"=3.061)")),
-	expression(paste("Laplace (",sigma,"=2.003)")),
-	expression(paste("Cauchy (",sigma,"=0.472)")),
-	expression(paste("SS (",sigma[l], "=3.741,",sigma[s],"=0.020)"))),
-	lty = c(1, 1, 1, 1 ), lwd = c(3,3,3,3), col = c(1,2,3,4), cex = 1.5, bty = "n", xpd = TRUE)
-dev.print(pdf,
-	paste(IMAGEOUT,"Priors.Intercept.pdf",sep=""),
-	width=10,height=6)
+dev.print(pdf, paste(IMAGEOUT, "CauchyPriorForPredictors.pdf",sep=""),width=8,height=8)
 ```
 
 ## Simulation
@@ -658,14 +560,26 @@ for(s in 1:S)
 				lambda=exp(matmul(Z.list[[j]],GAMMA[j, ]) + matmul(X.list[[j]],THETA)),log=TRUE)
 		)
 	}
-	lr <- lr + sum( log(dCSS(theta.p, df_spike, pmn.theta, psd.theta, df_slab, pmn.theta, scale_slab, p_spike))) -sum(log(dCSS(THETA, df_spike, pmn.theta, psd.theta, df_slab, pmn.theta, scale_slab, p_spike)))
-	# print("lr is")
-	# print(lr)
+
+  dlr <- sum( dcauchy(theta.p, pmn.theta, psd.theta, log=TRUE)) -sum(dcauchy(THETA, pmn.theta, psd.theta, log=TRUE))
+	lr <- lr + dlr
+  ################debug###############
+  delta_lr <- c(delta_lr, dlr)
+  lr_result <- c(lr_result, lr)
+  theta_proposed <- rbind(theta_proposed,t(theta.p))
+  ################debug###############
+  #cat("delta_lr is: ")
+	#cat(delta_lr)
+  #cat(" lr is: ")
+	#print(lr)
 	if( log(runif(1))<lr ) {
+    is_accepted <- c(is_accepted, TRUE)
 		# print("accepted!")
 		ACCEPT.Theta.count<- ACCEPT.Theta.count+1
 		THETA<-theta.p
-	}
+	}else{
+    is_accepted <- c(is_accepted, FALSE)
+  }
 
 	##update gamma
 	Sigma<-solve(iSigma) ; dSigma<-det(Sigma)
@@ -727,7 +641,7 @@ end.time <- Sys.time()
 ## Save and load results
 
 ```{r eval=FALSE}
-RESULTPATH = "./data_output/BHP.SS/"
+RESULTPATH = "./data_output/BHP.Cauchy/"
 save(THETA.post, file=paste(RESULTPATH,"THETA.post.S=",S,".RData",sep=""))
 save(SIGMA.post, file=paste(RESULTPATH,"SIGMA.post.S=",S,".RData",sep=""))
 save(ACCEPT.count, file=paste(RESULTPATH,"ACCEPT.count.S=",S,".RData",sep=""))
@@ -737,7 +651,7 @@ save(GAMMA.post, file=paste(RESULTPATH,"GAMMA.post.S=",S,".RData",sep=""))
 ```
 
 ```{r eval=TRUE}
-RESULTPATH = "./data_output/BHP.SS/"
+RESULTPATH = "./data_output/BHP.Cauchy/"
 load(paste(RESULTPATH,"THETA.post.S=",S,".RData",sep=""))
 load(paste(RESULTPATH,"SIGMA.post.S=",S,".RData",sep=""))
 load(paste(RESULTPATH,"ACCEPT.count.S=",S,".RData",sep=""))
@@ -800,7 +714,7 @@ for (i in 1:p) {
 stationarity.plot(THETA.post.mat[i, ],xlab="iteration",ylab=expression(theta))
 }
 dev.print(pdf,
-	paste(IMAGEOUT,"SS.THETA.post.boxplot.pdf",sep=""),
+	paste(IMAGEOUT,"Cauchy.THETA.post.boxplot.pdf",sep=""),
 	width=16,height=12)
 
 # Traceplot
@@ -809,7 +723,7 @@ for (i in 1:p) {
 plot(seq(1,dim(THETA.post.mat)[2],by=1), THETA.post.mat[i,], type = "l", xlab = "Iterations", ylab = expression(theta), main=i)
 }
 dev.print(pdf,
-	paste(IMAGEOUT,"SS.THETA.post.pdf",sep=""),
+	paste(IMAGEOUT,"Cauchy.THETA.post.pdf",sep=""),
 	width=16,height=12)
 
 # ACF plot
@@ -822,7 +736,7 @@ t <- paste(i,",Effective Size: ", esize, sep="")
 plot(acf_plot, xlab=t, ylab="", main=t)
 }
 dev.print(pdf,
-	paste(IMAGEOUT,"SS.ACF.THETA.post.pdf",sep=""),
+	paste(IMAGEOUT,"Cauchy.ACF.THETA.post.pdf",sep=""),
 	width=16,height=12)
 
 apply(SIGMA.post, 2, effectiveSize)
@@ -838,7 +752,7 @@ for(i in ind_sigma){
 plot(seq(1,dim(SIGMA.post.mat)[2],by=1), SIGMA.post.mat[i,], type = "l", xlab = "Iterations", ylab = expression(sigma^2), main=i)
 }
 dev.print(pdf,
-	paste(IMAGEOUT,"SS.SIGMA.post.pdf",sep=""),
+	paste(IMAGEOUT,"Cauchy.SIGMA.post.pdf",sep=""),
 	width=16,height=12)
 
 par(mfrow=c(3,4))
@@ -848,7 +762,7 @@ acf_plot <- acf(SIGMA.post.mat[i,], plot=FALSE)
 plot(acf_plot, xlab=t, ylab="", main=expression(paste("acf(",sigma^2,")",sep="")))
 }
 dev.print(pdf,
-	paste(IMAGEOUT,"SS.ACF.SIGMA.post.pdf",sep=""),
+	paste(IMAGEOUT,"Cauchy.ACF.SIGMA.post.pdf",sep=""),
 	width=16,height=12)
 ```
 
@@ -891,7 +805,7 @@ dev.print(pdf,
 
 ```{r}
 Xs <- apply(X, 2, mean)
-Xs[2] <- Xs[1]^2
+Xs[,2] <- Xs[,1]^2
 Xs <- matrix(rep(Xs, 85), nrow = 85, byrow = T)
 Xs[,3] <- seq(11, 95, by = 1)
 colnames(Xs) <- colnames(X)
@@ -906,15 +820,15 @@ lines(seq(11, 95, by = 1), qE[1,],col="black",lwd=0.5)
 lines(seq(11, 95, by = 1), qE[2,],col="black",lwd=1.0)
 lines(seq(11, 95, by = 1), qE[3,],col="black",lwd=0.5)
 dev.print(pdf,
-  paste(IMAGEOUT,"E_HH_age.pdf",sep=""),
-  width=16,height=12)
+	paste(IMAGEOUT,"E_HH_age.pdf",sep=""),
+	width=16,height=12)
 ```
 
 ### Expected Children Ever Born - Woman's age at marriage
 
 ```{r}
 Xs <- apply(X, 2, mean)
-Xs[2] <- Xs[1]^2
+Xs[,2] <- Xs[,1]^2
 Xs <- matrix(rep(Xs, 40), nrow = 40, byrow = T)
 Xs[,4] <- seq(9, 48, by = 1)
 colnames(Xs) <- colnames(X)
@@ -1050,8 +964,8 @@ winames[index]
 
 Xs <- as.matrix(c(1, apply(X, 2, mean)))
 Xs <- matrix(rep(Xs, 3), nrow = 3, byrow = T)
-Xs[,8] <- c(0, 1, 0)
-Xs[,9] <- c(0, 0, 1)
+Xs[,9] <- c(0, 1, 0)
+Xs[,10] <- c(0, 0, 1)
 
 eXB.post<- exp(t(Xs%*%THETA.post.mat) )
 qE<-apply( eXB.post,2,quantile,probs=c(.025,.5,.975))
@@ -2321,5 +2235,5 @@ for(j in 1:m)
   D_mean <- D_mean + sum(-2 * dpois(y.list[[j]], lambda=exp(matmul(Z.list[[j]], apply(GAMMA.post.mat[[j]],2,mean)) + matmul(X.list[[j]],as.matrix(apply(THETA.post.mat, 1, mean)) )),log=TRUE))
 }
 DIC <- 2*DIC_bar - D_mean
-# 112501.8
+# 111563.7
 ```

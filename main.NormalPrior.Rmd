@@ -688,7 +688,7 @@ j <- 1
 for (stratum in stratum_vector){
 	gamma_j <- NULL
 	for (s in c(1:length(GAMMA.post))){
-		if(i %% thin2 == 0){
+		if(s %% thin2 == 0){
 		# Thin again
 			gamma_j <- rbind(gamma_j, GAMMA.post[[s]][j, ])
 		}
@@ -1262,4 +1262,33 @@ MLE <- MLE + sum(wgt.list[[j]] * dpois(y.list[[j]], lambda=exp(matmul(Z.list[[j]
 }
 BIC_h <- q * log(m) + p * log(n) - 2 * MLE
 print(BIC_h)
+```
+
+DIC Calculation
+```{r}
+#
+S=220000
+B=20000
+thin=50
+thin2=2
+N_THIN=(S-B)/(thin*thin2)
+DIC_array<-array(dim=N_THIN)
+for(i in 1:N_THIN)
+{
+  DIC_i <- 0
+  for(j in 1:m)
+  {
+    DIC_i <- DIC_i + sum(-2 * dpois(y.list[[j]], lambda=exp(matmul(Z.list[[j]], GAMMA.post.mat[[j]][i,]) + matmul(X.list[[j]],as.matrix(THETA.post.mat[,i]) )),log=TRUE))
+  }
+  DIC_array[i] <- DIC_i
+}
+
+DIC_bar = mean(DIC_array)
+D_mean<-0
+for(j in 1:m)
+{
+  D_mean <- D_mean + sum(-2 * dpois(y.list[[j]], lambda=exp(matmul(Z.list[[j]], apply(GAMMA.post.mat[[j]],2,mean)) + matmul(X.list[[j]],as.matrix(apply(THETA.post.mat, 1, mean)) )),log=TRUE))
+}
+DIC <- 2*DIC_bar - D_mean
+# 111571.1
 ```
